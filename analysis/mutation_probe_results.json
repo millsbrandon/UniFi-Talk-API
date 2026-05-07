@@ -1,0 +1,79 @@
+{
+  "pcap_start": {
+    "status": 500,
+    "content_type": "text/html; charset=utf-8",
+    "body": "Internal Server Error",
+    "confirmed": false
+  },
+  "pcap_status": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+      "status": "no_external_storage",
+      "end_time": null
+    },
+    "confirmed": true
+  },
+  "pcap_stop": {
+    "status": 200,
+    "content_type": "text/plain; charset=utf-8",
+    "body": "OK",
+    "confirmed": true
+  },
+  "pcap_download": {
+    "status": 400,
+    "content_type": "text/html; charset=utf-8",
+    "body": "<binary 29 bytes>",
+    "confirmed": false
+  },
+  "audio_export_prepare": {
+    "status": 200,
+    "content_type": "text/plain; charset=utf-8",
+    "body": "OK",
+    "confirmed": true
+  },
+  "audio_export_status": {
+    "in_progress": true,
+    "available": false,
+    "confirmed": true
+  },
+  "audio_export_download": {
+    "status": 500,
+    "content_type": "text/html; charset=utf-8",
+    "body": "Internal Server Error",
+    "confirmed": true,
+    "note": "500 = endpoint exists, no export queued"
+  },
+  "recording_delete_single": {
+    "status": "skipped",
+    "confirmed": null
+  },
+  "recording_delete_bulk": {
+    "status": "skipped",
+    "confirmed": null
+  },
+  "voicemail_delete_bulk": {
+    "status": 200,
+    "content_type": "text/plain; charset=utf-8",
+    "body": "OK",
+    "confirmed": true
+  },
+  "voicemail_delete_single": {
+    "status": 404,
+    "content_type": "text/html; charset=utf-8",
+    "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /api/call_log/1c89614e-7f2f-413e-a977-e2018114d9be/delete</pre>\n</body>\n</html>\n",
+    "confirmed": false
+  },
+  "call_log_delete_single": {
+    "status": 200,
+    "content_type": "text/plain; charset=utf-8",
+    "body": "OK",
+    "confirmed": true
+  },
+  "call_log_delete_bulk": {
+    "status": 200,
+    "content_type": "text/plain; charset=utf-8",
+    "body": "OK",
+    "confirmed": true
+  }
+}

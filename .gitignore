@@ -1,0 +1,16 @@
+# Sensitive captures and large files — do not publish
+captures/
+analysis/bundles/
+analysis/live_probe_results.json
+analysis/confirmed_endpoints.json
+analysis/probe_results.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# macOS
+.DS_Store
