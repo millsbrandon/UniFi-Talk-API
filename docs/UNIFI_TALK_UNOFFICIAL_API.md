@@ -1,6 +1,7 @@
 # UniFi Talk Unofficial API — Community Research Notes
 
 > **Status**: Living document — confirmed against UniFi Talk v5.1.2 on UDM-Pro running UniFi OS v5.1.10  
+> **Also tested**: Talk v5.2.1 on Cloud Gateway Fiber (UCGF) — see [v5.2.1 differences](#v521-ucgf-differences)  
 > **Reverse-engineered by**: Live traffic capture + JS bundle analysis (`index-5.1.2.js`, 5.4 MB webpack bundle)  
 > **Disclaimer**: Ubiquiti provides no public API for UniFi Talk. This is the result of independent reverse-engineering. It may break without notice on future firmware updates.
 
@@ -1370,6 +1371,120 @@ print(f"Recording enabled: {config['call_log_recording_enabled']}")
 | `GET` | `/proxy/talk/api/debug/pcap/download` | ⚠️ 400 — no capture active |
 | `POST` | `/proxy/talk/api/exports/prepare_audio_data` | ✅ Confirmed — triggers archive build |
 | `GET` | `/proxy/talk/api/exports/audio_data_archive` | ✅ Confirmed — 500 until export ready, binary ZIP when done |
+| `GET` | `/proxy/talk/api/access/doors` | ✅ Confirmed (v5.2.1 UCGF) — UniFi Access door integration |
+| `GET` | `/proxy/talk/api/transcript/countries` | ✅ Confirmed (v5.2.1 UCGF) — transcription-supported countries |
+| `GET` | `/proxy/talk/api/call_center/queue/status` | ⚠️ 400 — endpoint exists, requires queue ID parameter |
+
+---
+
+## v5.2.1 UCGF Differences
+
+> Tested on Talk v5.2.1 running on Cloud Gateway Fiber (UCGF) on 2026-05-07. 95 endpoints probed.
+
+### New Endpoints Confirmed
+
+| Method | Path | Status | Response |
+|---|---|---|---|
+| GET | `/proxy/talk/api/access/doors` | 200 | `[]` (no Access hardware paired) |
+| GET | `/proxy/talk/api/transcript/countries` | 200 | `[]` (transcription not configured) |
+| GET | `/proxy/talk/api/call_center/queue/status` | 400 | `"invalid queue ID"` — exists but needs queue ID param |
+
+### `/info` Response — New Fields in v5.2.1
+
+The v5.2.1 `/info` response has a significantly richer schema than v5.1.2. The `features` object is replaced by top-level fields and a nested `identity_service_status` object.
+
+```json
+{
+  "version": "5.2.1",
+  "setup_complete": false,
+  "default_country_code": "+1",
+  "default_country": "US",
+  "controller_region": "Texas",
+  "controller_region_code": "TX",
+  "controller_latitude": 30.5875,
+  "controller_longitude": -97.8535,
+  "ivr_custom_recording_max_mb": 5,
+  "vm_custom_greeting_max_mb": 5,
+  "has_custom_gateways": false,
+  "is_hdd_available": true,
+  "is_ssd_available": false,
+  "call_recordings_available": true,
+  "has_switchboard": false,
+  "has_enabled_gateways": false,
+  "host_device_name": "Cloud Gateway Fiber",
+  "host_device_model": "UCGF",
+  "host_device_serial": "...",
+  "anonymous_controller_id": "uuid",
+  "uid_adopted": false,
+  "update_channel": "beta",
+  "identity_service_status": {
+    "uid": { "enabled": false, "running": false },
+    "talk": {
+      "is_installed": true,
+      "is_configured": false,
+      "running": true,
+      "assigned": false,
+      "updating": false,
+      "enabled": false
+    }
+  },
+  "region_has_talk_service_support": true
+}
+```
+
+**New fields not present in v5.1.2**:
+
+| Field | Type | Description |
+|---|---|---|
+| `controller_region` | string | Geographic region name |
+| `controller_region_code` | string | Region code (e.g. `"TX"`) |
+| `controller_latitude` | float | Console geolocation latitude |
+| `controller_longitude` | float | Console geolocation longitude |
+| `ivr_custom_recording_max_mb` | integer | Max upload size for IVR recordings (MB) |
+| `vm_custom_greeting_max_mb` | integer | Max upload size for VM greetings (MB) |
+| `has_switchboard` | boolean | Whether switchboard is configured |
+| `has_enabled_gateways` | boolean | Whether SIP gateways are active |
+| `host_device_name` | string | Console product name |
+| `host_device_model` | string | Console model code (e.g. `"UCGF"`) |
+| `host_device_serial` | string | Console serial number |
+| `anonymous_controller_id` | UUID | Anonymized controller identifier |
+| `uid_adopted` | boolean | Whether adopted to Ubiquiti cloud |
+| `update_channel` | string | `"release"` or `"beta"` |
+| `identity_service_status` | object | Nested service status for UID and Talk |
+| `region_has_talk_service_support` | boolean | Whether region supports Talk |
+| `setup_complete` | boolean | Whether initial setup wizard completed |
+| `call_recordings_available` | boolean | Whether recording storage is available |
+| `is_hdd_available` | boolean | HDD storage present |
+| `is_ssd_available` | boolean | SSD storage present |
+
+### `setting/config` — New Field
+
+v5.2.1 adds `ai_call_transcriptions_enabled` (boolean) to the config response.
+
+### Console Models
+
+| Model Code | Product | Confirmed |
+|---|---|---|
+| `UDMPRO` | UDM-Pro | v5.1.2 |
+| `UCGF` | Cloud Gateway Fiber | v5.2.1 |
+
+### Settings Mutation Endpoints — POST-Only
+
+All JS bundle settings paths (`setting/ai_call_transcriptions`, `setting/cnam_lookup`, `setting/fallback_number`, `setting/system_settings`, `setting/notifier_settings`, `setting/call_recording`, `setting/ringback`, `setting/voicemail_global_timeout`, `setting/voicemail_greeting`, `setting/generate_tts_file`) returned 404 on GET. These are POST-only mutation endpoints. Current values are readable from `setting/config` instead.
+
+### Community-Reported Endpoints — All 404 on v5.2.1
+
+| Endpoint | Reported By | Status |
+|---|---|---|
+| `/proxy/talk/api/extensions` | nexusct/cloudpbx | 404 |
+| `/proxy/talk/api/cdr` | nexusct/cloudpbx | 404 |
+| `/proxy/talk/api/cdr?limit=50` | nexusct/cloudpbx | 404 |
+| `/proxy/talk/api/diagnostics/setup_step` | thib3113/unifi-client | 404 |
+| `/proxy/talk/api/diagnostics/setup_discovered_devices` | thib3113/unifi-client | 404 |
+| `/proxy/talk/api/diagnostics/setup_milestone` | JS bundle | 404 |
+| `/proxy/talk/api/diagnostics/web_signal` | JS bundle | 404 |
+
+These may have existed on older Talk versions or different console models.
 
 ---
 
