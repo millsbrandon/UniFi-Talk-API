@@ -10,9 +10,11 @@ Tests (in safe order):
   5.  Voicemail deletion (bulk)           — only if a voicemail exists
 
 All destructive actions target the OLDEST records to avoid losing recent data.
-Results are printed and written to analysis/mutation_probe_results.json.
+Results are printed and written to private_captures/mutation_probe_results.json by default.
+Override output dir with UNIFI_CAPTURE_DIR=/path/to/dir.
 
 Usage:
+    python3 scripts/test_mutations.py
     python3 scripts/test_mutations.py --host <UDM-IP> -u <user> -p <pass>
     python3 scripts/test_mutations.py --host <UDM-IP> --token eyJ...
 """
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -40,6 +43,20 @@ from talk_sdk import TalkClient, TalkAPIError
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 results: dict = {}
+ROOT_DIR = Path(__file__).parent.parent
+DEFAULT_SECRETS_FILE = ROOT_DIR / ".local" / "secrets.json"
+DEFAULT_OUTPUT_FILE = Path(os.environ.get("UNIFI_CAPTURE_DIR", str(ROOT_DIR / "private_captures"))) / "mutation_probe_results.json"
+
+
+def load_secrets(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        print(f"[-] Failed to parse secrets file {path}: {exc}")
+        return {}
 
 def probe(label: str, method: str, client: TalkClient, path: str,
           body=None, stream=False) -> dict:
@@ -95,29 +112,50 @@ def probe(label: str, method: str, client: TalkClient, path: str,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", required=True)
+    ap.add_argument("--host")
     ap.add_argument("-u", "--username", default="")
     ap.add_argument("-p", "--password", default="")
     ap.add_argument("--token", default="")
     ap.add_argument("--dry-run", action="store_true",
                     help="Skip destructive deletions, only test PCAP/export")
+    ap.add_argument(
+        "--secrets",
+        default=str(DEFAULT_SECRETS_FILE),
+        help="Path to local secrets JSON (default: .local/secrets.json)",
+    )
+    ap.add_argument(
+        "--output",
+        default=str(DEFAULT_OUTPUT_FILE),
+        help="Output JSON path for probe results",
+    )
     args = ap.parse_args()
 
-    client = TalkClient(args.host)
+    secrets = load_secrets(Path(args.secrets))
+    host = args.host or secrets.get("host", "")
+    username = args.username or secrets.get("username", "")
+    password = args.password or secrets.get("password", "")
+    token = args.token or secrets.get("token", "")
 
-    if args.token:
+    if not host:
+        sys.exit("Provide --host or set host in --secrets file")
+
+    out_path = Path(args.output)
+
+    client = TalkClient(host)
+
+    if token:
         import base64
-        client._token = args.token
-        payload = args.token.split(".")[1]
+        client._token = token
+        payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
         client._csrf = json.loads(base64.urlsafe_b64decode(payload))["csrfToken"]
         client._session.cookies.set("TOKEN", client._token)
         client._session.headers["X-CSRF-Token"] = client._csrf
     else:
-        if not args.username or not args.password:
-            sys.exit("Provide --token OR --username + --password")
-        print(f"Logging in as {args.username}...")
-        client.login(args.username, args.password)
+        if not username or not password:
+            sys.exit("Provide token or username/password via args or --secrets file")
+        print(f"Logging in as {username}...")
+        client.login(username, password)
 
     B = f"/proxy/talk/api"
 
@@ -160,7 +198,7 @@ def main():
 
     if args.dry_run:
         print("\n── Dry run — skipping destructive deletion tests ───────────")
-        _save_results()
+        _save_results(out_path)
         return
 
     # ── 3. Fetch call log to find test targets ─────────────────────────────
@@ -246,11 +284,11 @@ def main():
     else:
         print("  ⚠️  No call log records found — skipping")
 
-    _save_results()
+    _save_results(out_path)
 
 
-def _save_results():
-    out = Path("analysis/mutation_probe_results.json")
+def _save_results(out: Path):
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(results, indent=2, default=str))
     confirmed = sum(1 for v in results.values() if v.get("confirmed") is True)
     total     = sum(1 for v in results.values() if v.get("confirmed") is not None)
