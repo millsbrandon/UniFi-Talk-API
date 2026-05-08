@@ -228,3 +228,101 @@ GET https://<UDM-IP>/proxy/talk/api/phone_designer
 Cookie: TOKEN=<jwt>
 X-CSRF-Token: <csrf>
 ```
+
+---
+
+## GET `/proxy/talk/api/dashboard/service_health`
+
+**Status**: ✅ Confirmed — returns time-series Talk service health buckets with embedded monitoring events.
+
+```http
+GET https://<UDM-IP>/proxy/talk/api/dashboard/service_health
+Cookie: TOKEN=<jwt>
+X-CSRF-Token: <csrf>
+```
+
+### Notes
+
+- Response includes `health_data[]` buckets keyed by `timestamp_start` / `timestamp_end`.
+- Each bucket includes `health_score` and `events[]`.
+- Live capture showed monitoring events such as `pbx_restarted` and `pbx_restarted_too_frequent` when the PBX had recently restarted.
+
+---
+
+## GET `/proxy/talk/api/stats/calls/series`
+
+**Status**: ✅ Confirmed — returns time-series aggregates for inbound and outbound call counts.
+
+```http
+GET https://<UDM-IP>/proxy/talk/api/stats/calls/series
+Cookie: TOKEN=<jwt>
+X-CSRF-Token: <csrf>
+```
+
+### Response shape
+
+```json
+[
+  {
+    "groupkey": "2026-05-08T09:00:00.000Z",
+    "direction": "out",
+    "count": "2",
+    "answered": "2",
+    "aggregates": {
+      "voicemailed": 0
+    }
+  }
+]
+```
+
+Counts are stringified numerics; `direction` is typically `"in"`, `"out"`, or `null` for totals.
+
+---
+
+## GET `/proxy/talk/api/billing/usage`
+
+**Status**: ✅ Confirmed — returns current usage counters for telephony billing dimensions.
+
+```http
+GET https://<UDM-IP>/proxy/talk/api/billing/usage
+Cookie: TOKEN=<jwt>
+X-CSRF-Token: <csrf>
+```
+
+### Notes
+
+- Top-level categories observed: `minutes`, `sms`, `cnam`, `transcriptions`, `softphone`.
+- Each category contains a `standard` object with fields such as `planned`, `overage`, `international`, `metered`, `trial`, and `quantity`.
+
+---
+
+## GET `/proxy/talk/api/acceptance/payments`
+
+**Status**: ✅ Confirmed — returns billing/payment terms acceptance state.
+
+```http
+GET https://<UDM-IP>/proxy/talk/api/acceptance/payments
+Cookie: TOKEN=<jwt>
+X-CSRF-Token: <csrf>
+```
+
+### Response shape
+
+```json
+{
+  "terms_url": "https://vault.pactsafe.io/.../legal.html?...",
+  "accepted": true
+}
+```
+
+---
+
+## GET `/proxy/talk/api/identity/status`
+
+**Status**: ✅ Confirmed — returns the current business/KYC identity state used by Talk billing and regulatory flows.
+
+```http
+GET https://<UDM-IP>/proxy/talk/api/identity/status
+Cookie: TOKEN=<jwt>
+X-CSRF-Token: <csrf>
+```

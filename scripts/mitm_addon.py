@@ -93,7 +93,17 @@ class UniFiTalkAddon:
 
         # Safely decode bodies
         try:
-            req_body = req.text if req.content else None
+            if req.content:
+                ct_req = req.headers.get("content-type", "")
+                if "json" in ct_req:
+                    try:
+                        req_body = json.loads(req.text)  # parsed dict — easier to read
+                    except Exception:
+                        req_body = req.text
+                else:
+                    req_body = req.text
+            else:
+                req_body = None
         except Exception:
             req_body = req.content.hex() if req.content else None
 

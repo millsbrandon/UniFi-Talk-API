@@ -67,11 +67,17 @@ There is **no** `meta`/`rc`/`message` wrapper (unlike UniFi Network WS). The `ev
 
 | Event | Frequency | Description |
 |---|---|---|
+| `BITRATE_UPDATE` | Every ~1s | Current aggregate audio bitrate and active call count |
 | `DEVICES_UPDATED` | Every ~10s | Device heartbeat — full device state array |
 | `CALL_LOG_UPDATED` | Per call event | Call record update with full call log entry |
 | `CALL_EVENTS_UPDATED` | Per call sub-event | Lightweight pointer — call UUID + timestamp |
 | `ONGOING_EVENTS_UPDATE` | On call start/end | Count of active ongoing calls |
+| `SYSTEM_LOG_LIST_UPDATE_TRIGGER` | Every few seconds | Signal to refresh the system log list |
 | `USERS_ON_ACTIVE_CALLS` | On call start/end | Array of user UUIDs currently on a call |
+| `USER_STORE_UPDATED` | Frequent | User-store delta update (user UUID + compact metadata) |
+| `SETTINGS_UPDATED` | Burst during settings changes | Real-time config deltas (only changed keys) |
+| `TALK_CONFIGURING_FSR_STARTED` | During SIP/routing reconfiguration | Backend began applying call-routing/NAT config |
+| `TALK_CONFIGURING_FSR_ENDED` | During SIP/routing reconfiguration | Backend finished applying call-routing/NAT config |
 | `TRIGGER_STAT_REFRESH` | Periodic | Signal to UI to refresh stats (no data payload) |
 
 ---
@@ -86,13 +92,13 @@ Fires every ~10 seconds as a heartbeat. Contains the full device state for all r
   "data": [
     {
       "mac": "aabbccddeeff",
-      "ip": "192.168.1.253",
+      "ip": "192.168.1.50",
       "model": "UT-ATA",
       "sshd_port": 22,
       "mgmt_is_default": false,
       "version": "1.1.5",
       "last_seen": "2026-05-07T03:46:08.074Z",
-      "con_ip": "192.168.1.253",
+      "con_ip": "192.168.1.50",
       "con_port": 45623,
       "uptime": 18256,
       "con_status": null,
@@ -135,6 +141,89 @@ Fires every ~10 seconds as a heartbeat. Contains the full device state for all r
     }
   ]
 }
+```
+
+---
+
+### `BITRATE_UPDATE`
+
+High-frequency telemetry event emitted roughly once per second. Useful for determining whether the PBX currently sees active RTP traffic, but not sufficient on its own to infer a call lifecycle.
+
+```json
+{
+  "event": "BITRATE_UPDATE",
+  "data": {
+    "bytesPerSecond": 329.6,
+    "activeCalls": 0
+  }
+}
+```
+
+Observed values:
+
+| Field | Type | Notes |
+|---|---|---|
+| `bytesPerSecond` | number | Aggregate audio traffic rate; often oscillates between `0`, `97.6`, `232`, and `329.6` in idle/heartbeat conditions |
+| `activeCalls` | integer | Count of currently active calls |
+
+---
+
+### `SETTINGS_UPDATED`
+
+Emitted when Talk settings are changed from UI flows. Payload contains only the keys changed in that update.
+
+```json
+{
+  "event": "SETTINGS_UPDATED",
+  "data": {
+    "nat_needs_static_port": true,
+    "static_port": 6767,
+    "advanced_call_routing_enabled": true
+  }
+}
+```
+
+Observed changed keys in live capture included:
+
+- `voicemail_email_transcriptions_enabled`
+- `nat_needs_static_port`
+- `static_port`
+- `logging_level`
+- `advanced_call_routing_enabled`
+- `acr_remote_socket_fast_timeout`
+
+---
+
+### `USER_STORE_UPDATED`
+
+Frequent low-payload event indicating user-store changes without sending the full user object.
+
+```json
+{
+  "event": "USER_STORE_UPDATED",
+  "data": {
+    "user_uuid": "a1b2c3d4-1111-4abc-8def-aabbccddeeff",
+    "item": {
+      "id": 10,
+      "status": "",
+      "redirect": {},
+      "has_active_calls": false,
+      "user_store_item_meta": {
+        "last_updated": "2026-05-08T04:49:10.805Z"
+      }
+    }
+  }
+}
+
+---
+
+### `TALK_CONFIGURING_FSR_STARTED` / `TALK_CONFIGURING_FSR_ENDED`
+
+Lifecycle markers around backend routing/SIP reconfiguration work. Typically observed alongside `SETTINGS_UPDATED` and `SYSTEM_LOG_LIST_UPDATE_TRIGGER`.
+
+```json
+{ "event": "TALK_CONFIGURING_FSR_STARTED", "data": {} }
+{ "event": "TALK_CONFIGURING_FSR_ENDED", "data": {} }
 ```
 
 ---
@@ -384,6 +473,20 @@ Empty list when no calls are active:
 
 ---
 
+### `SYSTEM_LOG_LIST_UPDATE_TRIGGER`
+
+Periodic UI refresh hint for the Talk system log panel. Carries no `data` payload. Frequently appears alongside `USERS_ON_ACTIVE_CALLS` during idle monitoring.
+
+```json
+{
+  "event": "SYSTEM_LOG_LIST_UPDATE_TRIGGER"
+}
+```
+
+This event does not appear to indicate a call state change by itself; treat it as a background refresh signal.
+
+---
+
 ### `TRIGGER_STAT_REFRESH`
 
 A server-side signal telling the Talk UI to refresh its statistics dashboard. Carries no meaningful data payload. Fires periodically (observed once per session in the initial connection burst).
@@ -434,7 +537,28 @@ When a device is reassigned to a different user and restarted, the following `DE
 4. DEVICES_UPDATED   user_id=<new UUID>, ext="NEW-EXT", sip_reg=true, status="online"    ← SIP registered
 ```
 
-The `USER_STORE_UPDATED` event also fires during reassignment with the new user's `active_ring_flow_id`, `redirect`, and `has_active_calls` state.
+The `USER_STORE_UPDATED` event also fires during reassignment with the edited user's `active_ring_flow_id`, `redirect`, `has_active_calls`, and `user_store_item_meta.last_updated` values.
+
+Live REST capture from the same reassignment flow shows why this happens:
+
+```
+1. PUT /proxy/talk/api/user/<source-user-uuid>    devices=[]
+2. USER_STORE_UPDATED                              user_uuid=<source-user-uuid>
+3. DEVICES_UPDATED                                 device temporarily follows source-user cleanup / reprovision state
+4. PUT /proxy/talk/api/user/<target-user-uuid>    devices=[] , did="+E164"
+5. USER_STORE_UPDATED                              user_uuid=<target-user-uuid>
+6. PUT /proxy/talk/api/user/<target-user-uuid>    devices=[{mac,...}] , did=null in request body
+7. USER_STORE_UPDATED                              user_uuid=<target-user-uuid>
+8. DEVICES_UPDATED                                 user_id/ext move to target user
+9. DEVICES_UPDATED                                 status="provisioning", sip_reg=null
+10. DEVICES_UPDATED                                status="online", sip_reg=true
+```
+
+Observed backend behavior:
+
+- Reassignment is orchestrated through full user-object `PUT`s, not a dedicated device-assign endpoint.
+- The target user's DID can be restored server-side even if the final assignment `PUT` carried `did: null`.
+- During the transient window, `DEVICES_UPDATED` may briefly show `phone_number: null` and `sip_reg: null` until provisioning finishes.
 
 The following sequence was observed during live test calls (2026-05-07):
 
@@ -526,6 +650,8 @@ ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
 | `CALL_EVENTS_UPDATED` schema | ✅ live-captured |
 | `ONGOING_EVENTS_UPDATE` schema | ✅ live-captured |
 | `USERS_ON_ACTIVE_CALLS` schema | ✅ live-captured |
+| `BITRATE_UPDATE` schema | ✅ live-captured |
+| `SYSTEM_LOG_LIST_UPDATE_TRIGGER` schema | ✅ live-captured |
 | `TRIGGER_STAT_REFRESH` schema | ✅ live-captured |
 | Inbound call → SA → voicemail sequence | ✅ live-captured |
 | Direct extension ring sequence | ✅ live-captured |

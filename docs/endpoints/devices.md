@@ -20,13 +20,13 @@ Returns a JSON array of device objects.
 [
   {
     "mac": "aabbccddeeff",
-    "ip": "192.168.1.253",
+    "ip": "192.168.1.50",
     "model": "UT-ATA",
     "sshd_port": 22,
     "mgmt_is_default": false,
     "version": "1.1.5",
     "last_seen": "2026-05-06T22:38:12.216Z",
-    "con_ip": "192.168.1.253",
+    "con_ip": "192.168.1.50",
     "con_port": 33537,
     "uptime": 6712793,
     "con_status": null,
@@ -255,7 +255,7 @@ Returns an array of blocked numbers in E.164 format.
 
 ## GET `/proxy/talk/api/users`
 
-**Status**: ✅ Confirmed — returns all Talk users (subset of identity fields).
+**Status**: ✅ Confirmed — returns all Talk users with SIP credentials and extension assignments.
 
 ```http
 GET https://<UDM-IP>/proxy/talk/api/users
@@ -263,7 +263,145 @@ Cookie: TOKEN=<jwt>
 X-CSRF-Token: <csrf>
 ```
 
+### Response
+
+Returns a JSON array. Each element is a Talk user.
+
+```json
+[
+  {
+    "id": 1,
+    "unique_id": "a1b2c3d4-1111-2222-3333-444455556666",
+    "first_name": "Jane",
+    "last_name": "Smith",
+    "full_name": "Jane Smith",
+    "email": "jane@example.com",
+    "user_email": "jane@example.com",
+    "status": null,
+    "create_time": 1708380563,
+    "did": "+12125551234",
+    "ext": "0001",
+    "sip_password": "EQiHCi1aF9hr",
+    "custom_sip_provider_id": null,
+    "updated_at": "2026-05-06T22:27:37.821Z",
+    "ulp_id": "a1b2c3d4-1111-2222-3333-444455556666",
+    "outbound_caller_id": null,
+    "vm_data": {},
+    "active_ring_flow_id": null,
+    "can_start_intercom_calls": true
+  }
+]
+```
+
+### Field Reference
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | integer | Talk-internal user ID |
+| `unique_id` | string (UUID) | UniFi identity UUID |
+| `ulp_id` | string (UUID) | UniFi Local Platform user ID |
+| `first_name` | string | First name |
+| `last_name` | string | Last name |
+| `full_name` | string | Display name |
+| `email` | string | Email address |
+| `did` | string | Primary E.164 DID assigned to this user |
+| `ext` | string | SIP extension (zero-padded 4-digit, e.g. `"0001"`) |
+| `sip_password` | string | **SIP digest auth password** for this extension on the internal FreeSWITCH server. Used with `ext` to register a SIP UA. See [SIP Protocol](sip.md). |
+| `custom_sip_provider_id` | integer or null | ID of a third-party SIP gateway (from `third_party_sip/gateway_list`) if this user routes via an external trunk; `null` for default Twilio routing |
+| `outbound_caller_id` | string or null | Override caller ID for outbound calls; `null` = use DID |
+| `active_ring_flow_id` | integer or null | ID of the active ring flow schedule for this user |
+| `vm_data` | object | Voicemail configuration/metadata |
+| `can_start_intercom_calls` | boolean | Whether user can initiate intercom calls |
+| `create_time` | integer | Unix timestamp of account creation |
+| `status` | string or null | User status (typically `null`) |
+
+> ⚠️ **Security**: `sip_password` is returned in plaintext. This is a real SIP credential that grants the ability to make and receive calls as that extension. Treat it with the same care as an API token.
+
 ---
+
+## PUT `/proxy/talk/api/user/{user_uuid}`
+
+**Status**: ✅ Confirmed — the Talk UI uses full-object user updates for live reassignment of devices and DIDs.
+
+```http
+PUT https://<UDM-IP>/proxy/talk/api/user/<user_uuid>
+Cookie: TOKEN=<jwt>
+X-CSRF-Token: <csrf>
+Content-Type: application/json
+```
+
+### Response
+
+Returns plain text:
+
+```text
+OK
+```
+
+### Observed Semantics
+
+- The request body is a near-complete user object, not a small patch.
+- Reassignment is driven through user updates rather than a dedicated `/devices/.../assign` endpoint.
+- The UI sends multiple writes during a move:
+  - clear the source user's `devices` array
+  - update the target user record
+  - attach the device in the target user's `devices` array
+- The backend may normalize fields after the write. In the captured move, the second target-user `PUT` carried `did: null`, but subsequent `GET /proxy/talk/api/users`, `GET /proxy/talk/api/number/list`, and `DEVICES_UPDATED` events restored the DID and device `phone_number`.
+
+### Minimum Fields Seen In Live Capture
+
+The live requests included many identity fields copied back verbatim. The reassignment-relevant fields were:
+
+```json
+{
+  "id": 10,
+  "unique_id": "a1b2c3d4-1111-4abc-8def-aabbccddeeff",
+  "did": "+12015550163",
+  "ext": "0009",
+  "outbound_caller_id": "self",
+  "devices": [],
+  "redirect": {},
+  "ring_groups": [],
+  "vm_data": {
+    "voicemail_timeout": null
+  },
+  "user_store_item_meta": {
+    "last_updated": "2026-05-08T03:19:06.763Z"
+  },
+  "should_add_user_to_group_with_matching_did": false
+}
+```
+
+The follow-up write that completed device assignment added the device object into `devices`:
+
+```json
+{
+  "id": 10,
+  "unique_id": "a1b2c3d4-1111-4abc-8def-aabbccddeeff",
+  "did": null,
+  "ext": "0009",
+  "devices": [
+    {
+      "mac": "70a741761a27",
+      "model": "UT-ATA",
+      "display_name": "UT-ATA-1A27",
+      "user_id": "a1b2c3d4-1111-4abc-8def-aabbccddeeff",
+      "ext": "0009",
+      "phone_number": "+12015550163"
+    }
+  ],
+  "should_add_user_to_group_with_matching_did": false
+}
+```
+
+### Reassignment Notes
+
+- Source-user cleanup and target-user assignment are separate writes.
+- `USER_STORE_UPDATED` is emitted for the edited user record immediately after each successful `PUT`.
+- `DEVICES_UPDATED` then reflects the actual handset/ATA migration and provisioning state.
+- The reassigned device may pass through `sip_reg: null` and `status: "provisioning"` before returning to `sip_reg: true`.
+
+
 
 ## GET `/proxy/talk/api/third_party_sip/gateway_list`
 
@@ -284,7 +422,7 @@ X-CSRF-Token: <csrf>
     "name": "Twilio My System",
     "enabled": true,
     "gateway_params": {
-      "proxy": "unifi-twilio.pstn.twilio.com",
+      "proxy": "sip.example-provider.com",
       "password": "<SIP password>",
       "register": true
     }
