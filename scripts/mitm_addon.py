@@ -9,7 +9,8 @@ Then proxy your browser through 127.0.0.1:8080.
 Install the mitmproxy CA cert by visiting http://mitm.it while proxied.
 
 Output:
-    captures/requests.jsonl  — newline-delimited JSON of every request/response
+    private_captures/requests.jsonl  — newline-delimited JSON of every request/response
+    Override output dir with UNIFI_CAPTURE_DIR=/path/to/dir.
 """
 
 import json
@@ -25,7 +26,8 @@ from mitmproxy import ctx, http, websocket
 
 # ── Config defaults (override with --set udm_host=X) ─────────────────────────
 DEFAULT_UDM_HOST = ""          # e.g. "192.168.1.1" — filter to this host only
-CAPTURES_DIR = Path(__file__).parent.parent / "captures"
+ROOT_DIR = Path(__file__).parent.parent
+CAPTURES_DIR = Path(os.environ.get("UNIFI_CAPTURE_DIR", str(ROOT_DIR / "private_captures")))
 
 # Paths that are almost never interesting — skip logging them
 IGNORE_PATH_PREFIXES = [

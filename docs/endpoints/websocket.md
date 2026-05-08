@@ -266,18 +266,46 @@ These appear inside `CALL_LOG_UPDATED → records[n].call_events[]`:
 
 | `event` | When it fires | Key `event_data` fields |
 |---|---|---|
-| `call_started` | Call arrives at the system | `from`, `to`, `to_smart_attendant_id` (if SA) or `to_user_uuid` (if direct) |
-| `seq_call_trying_endpoints` | System is ringing destination device(s) | `user_uuids[]`, `device_macs[]` |
+| `call_started` | Call arrives at the system | **Inbound**: `from`, `to`, `to_user_uuid` or `to_smart_attendant_id`; **Outbound**: `from`, `to`, `from_mac`, `from_user_uuid` |
+| `seq_call_trying_endpoints` | System is ringing destination device(s) | **Inbound**: `user_uuids[]`, `device_macs[]`; **Outbound**: `external_dids[]` |
+| `call_accepted` | Call was answered | `accepted_by` (ext), `accepted_by_user_uuid`, `accepted_by_device_mac` |
 | `call_sent_to_voicemail` | Call forwarded to a voicemail box | `recipient_user_uuids[]` |
-| `call_hangup` | Call ended | `hangup_cause` (e.g. `"normal_end"`) |
+| `call_hangup` | Call ended | `hangup_cause` — see values below |
+
+#### `hangup_cause` values (confirmed)
+
+| Value | Meaning |
+|---|---|
+| `"normal_end"` | Call ended normally after being answered (either side hung up) |
+| `"cancelled"` | Caller hung up before the call was answered |
+| `"refused"` | Outbound call rejected by the remote party |
 
 #### Call record status values (confirmed)
 
 | `status` | Meaning |
 |---|---|
-| `"accepted"` | Call is in-progress (live) |
+| `"ringing"` | Call is ringing (in-progress, not yet answered) |
+| `"accepted"` | Call was answered (in-progress or completed) |
 | `"voicemail"` | Call ended; went to voicemail |
+| `"refused"` | Outbound call rejected by remote party |
+| `"cancelled"` | Caller hung up before answer |
 | `"missed"` | Call rang but was not answered (no voicemail) |
+
+**Status progression for an answered call:** `ringing` → `accepted` (two separate `CALL_LOG_UPDATED` events — one when answered, one when hangup finalizes the duration/recording fields).
+
+#### Fields populated at answer time
+
+When a call is answered (`call_accepted` fires), these top-level record fields are populated:
+
+| Field | Value example | Notes |
+|---|---|---|
+| `answered_by` | `"0008"` (inbound) or `"+1-555-0100"` (outbound) | Extension or remote E.164 |
+| `answered_by_user_uuid` | UUID | Inbound only — null on outbound |
+| `answered_by_mac` | MAC | Inbound only — null on outbound |
+| `recording_filename` | `"YYYYMMDD_HHMMSS_{from}_{to}_{uuid_prefix}.mp3"` | Set at answer time for inbound recorded calls |
+| `from_did` | `"+1-555-0200"` | **Outbound only** — the DID used as caller ID |
+
+After hangup, `recording: true/false` and `quality_score` (integer 0–100) are set. `recording: false` is observed even when `quality_score: 100` (e.g. outbound calls to external voicemail).
 
 #### Call record routing fields
 
@@ -369,9 +397,46 @@ A server-side signal telling the Talk UI to refresh its statistics dashboard. Ca
 
 ---
 
-## Event Sequence — Inbound Call to Smart Attendant → Voicemail
+## Event Sequence — Outbound Call → Remote Answers (or Voicemail Picks Up) → Hangup
 
-The following sequence was observed during two live test calls (2026-05-07):
+The following sequence was observed during a live outbound call that was answered by remote voicemail, then hung up from the UniFi side (2026-05-08):
+
+```
+1. CALL_EVENTS_UPDATED (x2)   { call_id, updated_at }          ← call record created + call_started appended
+2. CALL_LOG_UPDATED (x2)      { records: [{ status:"ringing", direction:"out",
+                                             call_events:[call_started, seq_call_trying_endpoints] }] }
+3. CALL_EVENTS_UPDATED        { call_id, updated_at }          ← call_accepted appended (remote VM picked up)
+4. CALL_LOG_UPDATED           { records: [{ status:"accepted", answered_by:"+1-555-0100",
+                                             call_events:[..., call_accepted{accepted_by:"+1-555-0100"}] }] }
+5. CALL_EVENTS_UPDATED        { call_id, updated_at }          ← call_hangup appended (hung up from UniFi)
+6. CALL_LOG_UPDATED           { records: [{ status:"accepted", duration:40,
+                                             recording:false, quality_score:100, ... }] }
+```
+
+**Key observations:**
+- `status` remains `"accepted"` (never changes to a distinct "voicemail" status) when outbound call hits remote VM.
+- `recording: false` even though `quality_score: 100` — outbound calls to external numbers are not recorded by UniFi.
+- `recording_filename` is `null` for outbound calls (no server-side recording).
+- `from_did` is populated on outbound records with the DID used as caller ID.
+
+---
+
+## Device Reassignment + Restart Sequence
+
+When a device is reassigned to a different user and restarted, the following `DEVICES_UPDATED` progression is observed:
+
+```
+1. DEVICES_UPDATED   user_id=<new UUID>, ext="NEW-EXT", sip_reg=null, status="online"   ← reassignment applied
+2. DEVICES_UPDATED   user_id=<new UUID>, ext="NEW-EXT", sip_reg=null, status="provisioning",
+                     uptime=~25, con_ip=null                                              ← device rebooting
+3. DEVICES_UPDATED   user_id=<new UUID>, ext="NEW-EXT", sip_reg=null, status="online",
+                     con_ip=<IP>, uptime=25                                               ← device back online
+4. DEVICES_UPDATED   user_id=<new UUID>, ext="NEW-EXT", sip_reg=true, status="online"    ← SIP registered
+```
+
+The `USER_STORE_UPDATED` event also fires during reassignment with the new user's `active_ring_flow_id`, `redirect`, and `has_active_calls` state.
+
+The following sequence was observed during live test calls (2026-05-07):
 
 ```
 1. CALL_EVENTS_UPDATED        { call_id, updated_at }          ← call record created
@@ -384,14 +449,31 @@ The following sequence was observed during two live test calls (2026-05-07):
 8. CALL_LOG_UPDATED           { records: [{ vm_data:{...}, call_events:[...call_hangup], duration:22, ... }] }
 ```
 
-`ONGOING_EVENTS_UPDATE` and `USERS_ON_ACTIVE_CALLS` fire at connection time and when call state changes, but were not observed to update during smart-attendant-only calls (likely because no human user was placed on an active call — the SA handled it entirely).
+---
 
-**Key observations:**
+## Event Sequence — Inbound Direct Call → Answered → Hangup
+
+The following sequence was observed during a live answered inbound call (2026-05-08):
+
+```
+1. CALL_EVENTS_UPDATED        { call_id, updated_at }          ← call record created
+2. CALL_LOG_UPDATED (x2)      { records: [{ status:"ringing", call_events:[call_started, seq_call_trying_endpoints] }] }
+3. CALL_EVENTS_UPDATED        { call_id, updated_at }          ← call_accepted appended
+4. CALL_LOG_UPDATED           { records: [{ status:"ringing", call_events:[..., call_accepted], recording_filename:"...", ... }] }
+5. CALL_LOG_UPDATED           { records: [{ status:"accepted", answered_by:"EXT-001", ... }] }
+6. CALL_EVENTS_UPDATED        { call_id, updated_at }          ← call_hangup appended
+7. CALL_LOG_UPDATED           { records: [{ status:"accepted", duration:19, recording:true, quality_score:100, ... }] }
+```
+
+**Key difference from SA calls:** `USERS_ON_ACTIVE_CALLS` and `ONGOING_EVENTS_UPDATE` fire during direct extension calls (because a human user is on the call). The record transitions through `ringing` before reaching `accepted`.
+
+**Key observations (all sequences):**
 - `CALL_LOG_UPDATED.records` contains only recently-modified calls (1–2 records), not the full log.
-- `from_caller_name` is initially `null` and populated in a subsequent `CALL_LOG_UPDATED` once CNAM resolves.
+- `from_caller_name` (CNAM) is initially `null` and populated in a subsequent `CALL_LOG_UPDATED` once carrier lookup resolves.
 - `vm_data.file_path` reveals the server-side MP3 path (SSH-accessible only, no HTTP download API).
 - `vm_data.duration` is a **string** (seconds), not an integer.
 - `duration` on the call record itself (total call duration) is an integer.
+- `recording_filename` is assigned at answer time (before hangup), not retroactively.
 
 ---
 
@@ -446,7 +528,14 @@ ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
 | `USERS_ON_ACTIVE_CALLS` schema | ✅ live-captured |
 | `TRIGGER_STAT_REFRESH` schema | ✅ live-captured |
 | Inbound call → SA → voicemail sequence | ✅ live-captured |
-| Direct extension ring sequence | ⏳ not yet captured |
-| Answered call sequence | ⏳ not yet captured |
-| Outbound call sequence | ⏳ not yet captured |
-| Client-to-server messages (commands) | ⏳ unknown — no client sends observed |
+| Direct extension ring sequence | ✅ live-captured |
+| Answered call sequence | ✅ live-captured (2026-05-08) |
+| `call_accepted` event schema | ✅ live-captured |
+| Outbound call → remote VM sequence | ✅ live-captured (2026-05-08) |
+| `from_did` field on outbound records | ✅ confirmed |
+| Device reassignment + restart sequence | ✅ live-captured |
+| `USER_STORE_UPDATED` schema | ✅ live-captured |
+| Inbound `seq_call_trying_endpoints` schema | ✅ live-captured |
+| `hangup_cause` values | ✅ `normal_end`, `cancelled`, `refused` confirmed |
+| Hold/transfer event types | ⏳ not yet captured |
+| Client→Server frames | ⏳ not yet observed |

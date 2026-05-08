@@ -12,12 +12,14 @@ Usage (one-shot):
     python3 scripts/api_client.py --host 192.168.1.1 -u admin -p pass \
         --get /proxy/talk/api/v1/calls
 
-The client will pretty-print JSON responses and save them to captures/api_responses/
+The client will pretty-print JSON responses and save them to private_captures/api_responses/
+Override output dir with UNIFI_CAPTURE_DIR=/path/to/dir.
 """
 
 import argparse
 import code
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -31,7 +33,20 @@ except ImportError:
     print("Install requests: pip3 install requests")
     sys.exit(1)
 
-CAPTURES_DIR = Path(__file__).parent.parent / "captures" / "api_responses"
+ROOT_DIR = Path(__file__).parent.parent
+DEFAULT_SECRETS_FILE = ROOT_DIR / ".local" / "secrets.json"
+CAPTURES_DIR = Path(os.environ.get("UNIFI_CAPTURE_DIR", str(ROOT_DIR / "private_captures"))) / "api_responses"
+
+
+def load_secrets(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        print(f"[-] Failed to parse secrets file {path}: {exc}")
+        return {}
 
 
 class UniFiTalkClient:
@@ -226,25 +241,39 @@ class UniFiTalkClient:
 
 def main():
     parser = argparse.ArgumentParser(description="UniFi Talk API client")
-    parser.add_argument("--host", required=True)
+    parser.add_argument("--host")
     parser.add_argument("--username", "-u")
     parser.add_argument("--password", "-p")
     parser.add_argument("--token", help="Existing TOKEN cookie")
     parser.add_argument("--get", metavar="PATH", help="One-shot GET request")
     parser.add_argument("--enumerate", action="store_true", help="Enumerate common endpoints")
     parser.add_argument("--repl", action="store_true", default=True, help="Start interactive REPL")
+    parser.add_argument(
+        "--secrets",
+        default=str(DEFAULT_SECRETS_FILE),
+        help="Path to local secrets JSON (default: .local/secrets.json)",
+    )
     args = parser.parse_args()
 
-    client = UniFiTalkClient(args.host)
+    secrets = load_secrets(Path(args.secrets))
+    host = args.host or secrets.get("host", "")
+    username = args.username or secrets.get("username", "")
+    password = args.password or secrets.get("password", "")
+    token = args.token or secrets.get("token", "")
 
-    if args.token:
-        client.token = args.token
-        client.session.cookies.set("TOKEN", args.token)
-    elif args.username and args.password:
-        if not client.login(args.username, args.password):
+    if not host:
+        parser.error("Provide --host or set host in --secrets file")
+
+    client = UniFiTalkClient(host)
+
+    if token:
+        client.token = token
+        client.session.cookies.set("TOKEN", token)
+    elif username and password:
+        if not client.login(username, password):
             sys.exit(1)
     else:
-        parser.error("Provide --token or --username/--password")
+        parser.error("Provide token or username/password via args or --secrets file")
 
     if args.get:
         client.get(args.get)

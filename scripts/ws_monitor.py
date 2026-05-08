@@ -3,19 +3,24 @@
 ws_monitor.py — Connect to UniFi Talk WebSocket and monitor real-time events.
 
 Usage:
-    # Authenticate first (or pass an existing token):
+    # Load host/user/password from .local/secrets.json (recommended):
+    python3 scripts/ws_monitor.py
+
+    # Or authenticate via flags:
     python3 scripts/ws_monitor.py --host 192.168.1.1 --username admin --password yourpass
 
     # Or pass a token you've already captured:
     python3 scripts/ws_monitor.py --host 192.168.1.1 --token eyJ...
 
 Output:
-    Prints JSON events to stdout and appends them to captures/ws_events.jsonl
+    Prints JSON events to stdout and appends them to private_captures/ws_events.jsonl
+    Override output dir with UNIFI_CAPTURE_DIR=/path/to/dir
 """
 
 import argparse
 import base64
 import json
+import os
 import ssl
 import sys
 import time
@@ -38,7 +43,23 @@ except ImportError:
     print("Install requests: pip3 install requests")
     sys.exit(1)
 
-CAPTURES_DIR = Path(__file__).parent.parent / "captures"
+ROOT_DIR = Path(__file__).parent.parent
+DEFAULT_SECRETS_FILE = ROOT_DIR / ".local" / "secrets.json"
+CAPTURES_DIR = Path(os.environ.get("UNIFI_CAPTURE_DIR", str(ROOT_DIR / "private_captures")))
+FOCUS_TERMS = (
+    "call",
+    "voicemail",
+    "record",
+    "recording",
+    "hangup",
+    "hang_up",
+    "end_call",
+    "dial",
+    "outbound",
+    "initiate",
+    "start",
+)
+SCENARIO = ""
 
 # WebSocket paths/URLs to try (in order of probability)
 # JS bundle: talk_ws_url = `wss://${hostname}:3419`  (backend listens on 3419, localhost-only)
@@ -85,6 +106,17 @@ def login(host: str, username: str, password: str):  # -> tuple[str, str]
     return token, csrf
 
 
+def load_secrets(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        print(f"[-] Failed to parse secrets file {path}: {exc}")
+        return {}
+
+
 def on_message(ws, message):
     ts = datetime.now(tz=timezone.utc).isoformat()
     try:
@@ -97,11 +129,18 @@ def on_message(ws, message):
         print(f"\n[{ts}] RAW: {message[:500]}")
         parsed = {"raw": message}
 
-    record = {"ts": ts, "data": parsed if isinstance(parsed, dict) else message}
+    record = {"ts": ts, "scenario": SCENARIO, "data": parsed if isinstance(parsed, dict) else message}
     log_file = CAPTURES_DIR / "ws_events.jsonl"
     CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a") as f:
         f.write(json.dumps(record) + "\n")
+
+    # Save a focused stream for call control and recording investigations.
+    lowered = json.dumps(record, default=str).lower()
+    if any(term in lowered for term in FOCUS_TERMS):
+        focus_file = CAPTURES_DIR / "ws_events_focus.jsonl"
+        with open(focus_file, "a") as f:
+            f.write(json.dumps(record) + "\n")
 
 
 def on_error(ws, error):
@@ -152,26 +191,48 @@ def try_connect(url: str, token: str, csrf: str) -> bool:
 
 
 def main():
+    global SCENARIO
     parser = argparse.ArgumentParser(description="Monitor UniFi Talk WebSocket events")
-    parser.add_argument("--host", required=True, help="UDM IP or hostname")
+    parser.add_argument("--host", help="UDM IP or hostname")
     parser.add_argument("--username", "-u", help="UniFi OS username")
     parser.add_argument("--password", "-p", help="UniFi OS password")
     parser.add_argument("--token", help="Existing TOKEN cookie value")
     parser.add_argument("--csrf", default="", help="CSRF token (if known)")
     parser.add_argument("--url", help="Specific WebSocket URL to try (skips auto-discovery)")
+    parser.add_argument(
+        "--scenario",
+        default="",
+        help="Optional label for this run (example: outbound-call-test)",
+    )
+    parser.add_argument(
+        "--secrets",
+        default=str(DEFAULT_SECRETS_FILE),
+        help="Path to local secrets JSON (default: .local/secrets.json)",
+    )
     args = parser.parse_args()
+    SCENARIO = args.scenario
 
-    if args.token:
-        token, csrf = args.token, args.csrf
-    elif args.username and args.password:
-        token, csrf = login(args.host, args.username, args.password)
+    secrets = load_secrets(Path(args.secrets))
+    host = args.host or secrets.get("host", "")
+    username = args.username or secrets.get("username", "")
+    password = args.password or secrets.get("password", "")
+    token_arg = args.token or secrets.get("token", "")
+    csrf_arg = args.csrf or secrets.get("csrf", "")
+
+    if not host:
+        parser.error("Provide --host or set host in --secrets file")
+
+    if token_arg:
+        token, csrf = token_arg, csrf_arg
+    elif username and password:
+        token, csrf = login(host, username, password)
     else:
-        parser.error("Provide either --token or both --username and --password")
+        parser.error("Provide token or username/password via args or --secrets file")
 
     if args.url:
         entries = [("manual", args.url)]
     else:
-        entries = [(kind, url.format(host=args.host)) for kind, url in WS_ENTRIES]
+        entries = [(kind, url.format(host=host)) for kind, url in WS_ENTRIES]
 
     for kind, url in entries:
         print(f"\n{'='*60}")
